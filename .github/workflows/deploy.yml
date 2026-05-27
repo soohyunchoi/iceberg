@@ -1,0 +1,73 @@
+name: Deploy SEED Backend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm ci
+        working-directory: seed-backend/infra
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: npx cdk diff -c env=dev -c alertEmail=${{ secrets.ALERT_EMAIL }}
+        working-directory: seed-backend/infra
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm ci
+        working-directory: seed-backend/infra
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Build and push the Lambda container image
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Build, tag and push image
+        working-directory: seed-backend
+        run: |
+          docker build -t seed-lambda .
+          docker tag seed-lambda:latest ${{ steps.ecr-login.outputs.registry }}/seed-lambda-prod:${{ github.sha }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/seed-lambda-prod:${{ github.sha }}
+
+      # CDK deploy
+      - name: CDK deploy
+        working-directory: seed-backend/infra
+        run: |
+          npx cdk deploy --all --require-approval never \
+            -c env=prod \
+            -c alertEmail=${{ secrets.ALERT_EMAIL }}
+        env:
+          IMAGE_TAG: ${{ github.sha }}
